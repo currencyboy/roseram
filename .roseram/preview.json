@@ -1,0 +1,9 @@
+{
+  "type": "node",
+  "install": "npm install",
+  "dev": "npm run dev",
+  "port": 3000,
+  "env": {
+    "NODE_ENV": "development"
+  }
+}

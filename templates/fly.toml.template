@@ -1,0 +1,39 @@
+app = "{{APP_NAME}}"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3001"
+
+[processes]
+  app = "npm run start"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ['app']
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[deploy]
+  release_command = "echo 'Preview app deployed'"
+  strategy = "rolling"
+
+[checks]
+  [checks.http]
+    grace_period = "30s"
+    interval = "30s"
+    method = "get"
+    path = "/"
+    protocol = "https"
+    timeout = "5s"
+    tls_skip_verify = false

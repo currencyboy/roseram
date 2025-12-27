@@ -1,0 +1,29 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install all dependencies (including dev)
+RUN npm install
+
+# Copy application code
+COPY . .
+
+# Create public directory if it doesn't exist
+RUN mkdir -p /app/public
+
+# Set environment for development
+ENV NODE_ENV=development
+ENV PORT=3001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD wget --quiet --tries=1 --spider http://localhost:3001/ || exit 1
+
+# Expose the dev server port
+EXPOSE 3001
+
+# Start the development server
+CMD ["npm", "run", "dev"]

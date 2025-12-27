@@ -1,0 +1,194 @@
+name: Deploy Preview to Fly.io
+
+on:
+  workflow_dispatch:
+    inputs:
+      appName:
+        description: 'Fly.io app name'
+        required: true
+        type: string
+      repoUrl:
+        description: 'Repository URL'
+        required: true
+        type: string
+      branch:
+        description: 'Branch to deploy'
+        required: true
+        type: string
+
+  # Also trigger on pushes to roseram-* branches
+  push:
+    branches:
+      - 'roseram-*'
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Detect package manager
+        id: detect
+        run: |
+          if [ -f "pnpm-lock.yaml" ]; then
+            echo "package_manager=pnpm" >> $GITHUB_OUTPUT
+            echo "install_cmd=pnpm install --frozen-lockfile" >> $GITHUB_OUTPUT
+          elif [ -f "yarn.lock" ]; then
+            echo "package_manager=yarn" >> $GITHUB_OUTPUT
+            echo "install_cmd=yarn install --frozen-lockfile" >> $GITHUB_OUTPUT
+          else
+            echo "package_manager=npm" >> $GITHUB_OUTPUT
+            echo "install_cmd=npm ci --only=production" >> $GITHUB_OUTPUT
+          fi
+
+          # Check for build script in package.json
+          if grep -q '"build"' package.json; then
+            echo "has_build_script=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_build_script=false" >> $GITHUB_OUTPUT
+          fi
+
+          # Detect start script
+          if grep -q '"dev"' package.json; then
+            echo "start_script=dev" >> $GITHUB_OUTPUT
+          elif grep -q '"start"' package.json; then
+            echo "start_script=start" >> $GITHUB_OUTPUT
+          else
+            echo "start_script=start" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install dependencies
+        run: ${{ steps.detect.outputs.install_cmd }}
+        continue-on-error: true
+
+      - name: Build application
+        if: steps.detect.outputs.has_build_script == 'true'
+        run: |
+          if [ "${{ steps.detect.outputs.package_manager }}" = "pnpm" ]; then
+            pnpm build
+          elif [ "${{ steps.detect.outputs.package_manager }}" = "yarn" ]; then
+            yarn build
+          else
+            npm run build
+          fi
+        continue-on-error: true
+
+      - name: Install Fly CLI
+        run: curl -L https://fly.io/install.sh | sh
+        env:
+          FLYCTL_INSTALL: /usr/local
+
+      - name: Add Fly CLI to PATH
+        run: echo "/usr/local/bin" >> $GITHUB_PATH
+
+      - name: Determine app name
+        id: app_name
+        run: |
+          if [ -n "${{ github.event.inputs.appName }}" ]; then
+            APP_NAME="${{ github.event.inputs.appName }}"
+          else
+            # Auto-generate app name from branch
+            BRANCH_NAME="${{ github.ref }}"
+            BRANCH_NAME="${BRANCH_NAME#refs/heads/}"
+            # Generate hash from repo name + branch
+            HASH=$(echo "${{ github.repository }}-$BRANCH_NAME" | sha256sum | cut -c1-8)
+            APP_NAME="roseram-$HASH"
+          fi
+          echo "app_name=$APP_NAME" >> $GITHUB_OUTPUT
+
+      - name: Create or update fly.toml
+        run: |
+          # Only create if it doesn't exist
+          if [ ! -f "fly.toml" ]; then
+            cat > fly.toml <<EOF
+          app = "${{ steps.app_name.outputs.app_name }}"
+          primary_region = "us-east"
+
+          [env]
+            NODE_ENV = "production"
+            PACKAGE_MANAGER = "${{ steps.detect.outputs.package_manager }}"
+
+          [http_service]
+            internal_port = 3000
+            force_https = true
+            auto_stop_machines = true
+            auto_start_machines = true
+          EOF
+          fi
+
+      - name: Deploy to Fly.io
+        id: deploy
+        run: |
+          # Check if app exists, if not create it
+          if ! flyctl apps list | grep -q "${{ steps.app_name.outputs.app_name }}"; then
+            echo "Creating new Fly.io app: ${{ steps.app_name.outputs.app_name }}"
+            flyctl apps create "${{ steps.app_name.outputs.app_name }}" --gen-name=false || true
+          fi
+
+          echo "Deploying to Fly.io..."
+          echo "Package Manager: ${{ steps.detect.outputs.package_manager }}"
+          echo "Start Script: ${{ steps.detect.outputs.start_script }}"
+
+          # Deploy the app
+          flyctl deploy \
+            --app "${{ steps.app_name.outputs.app_name }}" \
+            --strategy immediate \
+            --remote-only \
+            2>&1 | tee deploy.log
+
+          # Get the app status
+          APP_URL="https://${{ steps.app_name.outputs.app_name }}.fly.dev"
+          echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
+
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Wait for deployment
+        run: |
+          echo "Waiting for app to be ready..."
+          max_attempts=30
+          attempt=0
+          
+          while [ $attempt -lt $max_attempts ]; do
+            if curl -f -s "${{ steps.deploy.outputs.app_url }}" > /dev/null 2>&1; then
+              echo "✓ App is ready at ${{ steps.deploy.outputs.app_url }}"
+              exit 0
+            fi
+            
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts - waiting for app to start..."
+            sleep 5
+          done
+          
+          echo "⚠ Deployment timeout - app may still be starting"
+          exit 0
+
+      - name: Log deployment info
+        if: always()
+        run: |
+          echo "Deployment Summary:"
+          echo "- App Name: ${{ steps.app_name.outputs.app_name }}"
+          echo "- URL: ${{ steps.deploy.outputs.app_url }}"
+          echo "- Branch: ${{ github.ref }}"
+          echo "- Commit: ${{ github.sha }}"
+
+      - name: Report deployment failure
+        if: failure()
+        run: |
+          echo "::error::Deployment to Fly.io failed. Check logs above for details."
+          exit 1

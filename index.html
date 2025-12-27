@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Chat</title>
+    <link rel="preload" href="./styles.css" as="style" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./src/main.js"></script>
+  </head>
+  <body class="chat-page">
+    <a class="skip-navigation" href="#main-content">Skip to content</a>
+    <main id="main-content" class="chat-container">
+      <div id="chat-messages" class="chat-messages" aria-live="polite" aria-relevant="additions"></div>
+      <form id="chat-form" class="chat-form" autocomplete="off">
+        <input id="chat-input" class="text-input" type="text" name="message" placeholder="Type a message…" aria-label="Message" required />
+        <button class="send-button" type="submit">Send</button>
+      </form>
+    </main>
+  </body>
+</html>
